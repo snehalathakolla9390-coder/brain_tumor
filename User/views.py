@@ -362,17 +362,17 @@ def predict(request):
             return render(request , 'Users/UserPredict.html')
 
         image_resized = cv2.resize(image, (128, 128))
-        b, g, r = cv2.split(image_resized) 
-        image_resized = cv2.merge([r, g, b]) 
-
-        # Correct Preprocessing: Transpose to (C, H, W) and normalize
-        image_input = np.transpose(image_resized, (2, 0, 1))
+        # MATCHING TRAINING PREPROCESSING: 
+        # The training code used .reshape(3, 128, 128) on the BGR image.
+        # We must do the same to match the model's learned weights.
+        image_input = image_resized.reshape(3, 128, 128)
         image_input = image_input.reshape(1, 3, 128, 128)
         image_input = torch.from_numpy(image_input).float() / 255.0
 
         with torch.no_grad():
             output = model(image_input)
             prediction_score = output.item()
+            # The model predicts the probability of a tumor
             result = "Tumor detected" if prediction_score >= 0.5 else "No tumor detected"
 
         return render(request , 'Users/UserPredict.html', {
