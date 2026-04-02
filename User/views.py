@@ -122,9 +122,10 @@ def Traning(request):
                 for f in glob.glob(path):
                     img = cv2.imread(f)
                     img = cv2.resize(img,(128 , 128))
-                    b, g, r = cv2.split(img)
-                    cv2.merge([r, g, b])
-                    img = img.reshape(img.shape[2], img.shape[0], img.shape[1])
+                    # Convert BGR to RGB correctly
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    # Use transpose to move channels to the front (C, H, W)
+                    img = np.transpose(img, (2, 0, 1))
                     tumor.append(img)
 
 
@@ -132,14 +133,12 @@ def Traning(request):
                 for f in glob.glob(path):
                     img = cv2.imread(f)
                     img = cv2.resize(img,(128 , 128))
-                    b, g, r = cv2.split(img)
-                    cv2.merge([r, g, b])
-                    img = img.reshape(img.shape[2], img.shape[0], img.shape[1])
+                    # Convert BGR to RGB correctly
+                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                    # Use transpose to move channels to the front (C, H, W)
+                    img = np.transpose(img, (2, 0, 1))
                     healthy.append(img)
         
-                #out images
-
-
                 tumor = np.array(tumor, dtype=np.float32)
                 healthy = np.array(healthy, dtype=np.float32)
 
@@ -214,7 +213,7 @@ def Traning(request):
         plt.grid()
         plt.show()
         eta = 0.0001
-        EPOCHS = 300
+        EPOCHS = 50
         optimizer = torch.optim.Adam(model.parameters() , lr = eta)
         dataloader = DataLoader(mri_dataset , batch_size = 32 , shuffle = True)
         model.train()
@@ -232,6 +231,9 @@ def Traning(request):
                 optimizer.step()
                 losses.append(loss.item())
                 print('Tain Epoch {} Loss {:.3f}'.format(epoch, np.mean(losses)))
+        
+        # Save the newly trained model weights
+        torch.save(model.state_dict(), os.path.join(settings.MEDIA_ROOT, 'weights', 'model.pt'))
 
         model.eval()
         dataloader = DataLoader(mri_dataset , batch_size = 32 , shuffle = False)
@@ -362,10 +364,10 @@ def predict(request):
             return render(request , 'Users/UserPredict.html')
 
         image_resized = cv2.resize(image, (128, 128))
-        # MATCHING TRAINING PREPROCESSING: 
-        # The training code used .reshape(3, 128, 128) on the BGR image.
-        # We must do the same to match the model's learned weights.
-        image_input = image_resized.reshape(3, 128, 128)
+        # Convert BGR to RGB to match updated training
+        image_rgb = cv2.cvtColor(image_resized, cv2.COLOR_BGR2RGB)
+        # Use transpose (C, H, W) to match updated training
+        image_input = np.transpose(image_rgb, (2, 0, 1))
         image_input = image_input.reshape(1, 3, 128, 128)
         image_input = torch.from_numpy(image_input).float() / 255.0
 
