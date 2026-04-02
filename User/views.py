@@ -280,10 +280,12 @@ def predict(request):
         if not img:
             messages.error(request, 'Please select an image to upload.')
             return render(request , 'Users/UserPredict.html')
+        
         fs = FileSystemStorage(location=settings.MEDIA_ROOT)
-        filename = fs.save(img.name, img)  # Save the uploaded file with its original name
+        filename = fs.save(img.name, img)
         uploaded_file_url = fs.url(filename)
         image_path = os.path.join(settings.MEDIA_ROOT , filename)
+
         class CNN(nn.Module):
             def __init__(self):
                 super(CNN, self).__init__()
@@ -301,102 +303,84 @@ def predict(request):
                     nn.Linear(in_features=120, out_features=84),
                     nn.Tanh(),
                     nn.Linear(in_features=84, out_features=1),
-                    
                 )
             def forward(self, x):
                 x = self.cnn_model(x)
                 x = x.view(x.size(0), -1)
                 x = self.fc_model(x)
-                x = F.sigmoid(x)
+                x = torch.sigmoid(x)
                 return x
 
         model = CNN()
-        model.load_state_dict(torch.load(os.path.join(settings.MEDIA_ROOT , 'weights' , 'model.pt')))
+        model_path = os.path.join(settings.MEDIA_ROOT, 'weights', 'model.pt')
+        if not os.path.exists(model_path):
+            messages.error(request, 'Model weights not found. Please ensure media/weights/model.pt exists.')
+            return render(request, 'Users/UserPredict.html')
+            
+        model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
         model.eval()
 
-        # Load and process the image
-        # image_path = os.path.join(settings.MEDIA_ROOT , filename)
         image = cv2.imread(image_path)
-        
-        # Check if it is an MRI image
-        # 1. Grayscale check (tighter)
+        if image is None:
+            messages.error(request, 'Failed to process image.')
+            return render(request, 'Users/UserPredict.html')
+
+        # 1. Grayscale check
         b_full, g_full, r_full = cv2.split(image)
         diff_bg = np.mean(np.abs(b_full.astype(int) - g_full.astype(int)))
         diff_gr = np.mean(np.abs(g_full.astype(int) - r_full.astype(int)))
         diff_rb = np.mean(np.abs(r_full.astype(int) - b_full.astype(int)))
         
-        # 2. Background check (MRI scans have significant black/dark backgrounds)
+        # 2. Background check
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         black_pixels = np.sum(gray < 40) / gray.size
         
-        # 3. Corner check (MRI corners are almost always black)
+        # 3. Corner check
         h, w = gray.shape
         c_h, c_w = h // 10, w // 10
         corners = [
-            gray[0:c_h, 0:c_w],               # Top-left
-            gray[0:c_h, w-c_w:w],             # Top-right
-            gray[h-c_h:h, 0:c_w],             # Bottom-left
-            gray[h-c_h:h, w-c_w:w]            # Bottom-right
+            gray[0:c_h, 0:c_w],
+            gray[0:c_h, w-c_w:w],
+            gray[h-c_h:h, 0:c_w],
+            gray[h-c_h:h, w-c_w:w]
         ]
         avg_corners = np.mean([np.mean(c) for c in corners])
 
-        # 4. Circular/Elliptical Mask Check (MRI scans are centered with black borders)
+        # 4. Mask Check
         mask = np.zeros(gray.shape, dtype=np.uint8)
-        # Create an elliptical mask for the center 90% of the image
         cv2.ellipse(mask, (w//2, h//2), (int(w*0.45), int(h*0.45)), 0, 0, 360, 255, -1)
-        # Invert mask to get the "background" area
         background_mask = cv2.bitwise_not(mask)
-        # Calculate average brightness of pixels that SHOULD be black background
         avg_background_brightness = cv2.mean(gray, mask=background_mask)[0]
 
-        # MRI Heuristic: 
-        # - Low color diff (Grayscale)
-        # - Sufficient black population
-        # - Dark corners/background
         is_mri = (diff_bg <= 12 and diff_gr <= 12 and diff_rb <= 12) and \
                  (black_pixels > 0.15) and \
                  (avg_corners < 80) and \
                  (avg_background_brightness < 80)
 
-        image_resized = cv2.resize(image, (128, 128))
-        b, g, r = cv2.split(image_resized) 
-        image_resized = cv2.merge([r, g, b])  # Convert BGR to RGB
-
         if not is_mri:
-            plt.imshow(image_resized)
-            plt.title("Invalid Image - Not an MRI Scan")
-            plt.axis('off')
-            plt.show()
             messages.error(request, 'Invalid image. Please upload a valid MRI scanning image.')
             return render(request , 'Users/UserPredict.html')
 
-        # Reshape to match input size and normalize
-        image_input = image_resized.reshape(1, 3, 128, 128)
+        image_resized = cv2.resize(image, (128, 128))
+        b, g, r = cv2.split(image_resized) 
+        image_resized = cv2.merge([r, g, b]) 
+
+        # Correct Preprocessing: Transpose to (C, H, W) and normalize
+        image_input = np.transpose(image_resized, (2, 0, 1))
+        image_input = image_input.reshape(1, 3, 128, 128)
         image_input = torch.from_numpy(image_input).float() / 255.0
 
-        # Define the thresholding function
-        def threshold(scores, threshold=0.5, minimum=0, maximum=1):
-            x = np.array(list(scores))
-            x[x >= threshold] = maximum    
-            x[x < threshold] = minimum
-            return x
-
-        # Make prediction
         with torch.no_grad():
             output = model(image_input)
+            prediction_score = output.item()
+            result = "Tumor detected" if prediction_score >= 0.5 else "No tumor detected"
 
-        # Apply threshold
-        prediction = threshold(output.cpu().numpy())
-
-        # Show the image with the prediction result
-        plt.imshow(image_resized)
-        if prediction == 1:
-            plt.title("Tumor detected")
-        else:
-            plt.title("No tumor detected")
+        return render(request , 'Users/UserPredict.html', {
+            'uploaded_file_url': uploaded_file_url,
+            'result': result,
+            'score': round(prediction_score * 100, 2)
+        })
         
-        plt.axis('off')  # Hide axis
-        plt.show()    
     return render(request , 'Users/UserPredict.html')
     
 
